@@ -1,15 +1,25 @@
 import os
+import io
+import base64
 import streamlit as st
 from PIL import Image
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
+from openai import OpenAI
 
 load_dotenv()
 
+# ----------------------------
+# Config
+# ----------------------------
 st.set_page_config(page_title="AI Storybook Illustrator", layout="wide")
 
 st.title("📖 AI Storybook Illustrator")
 st.caption("Paste a story → auto-split into scenes → generate illustrations (with character consistency)")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ----------------------------
 # Inputs
@@ -28,7 +38,7 @@ style = st.selectbox(
 max_scenes = st.slider("Maximum scenes", 1, 6, 3)
 creativity = st.slider("Creativity level (guidance)", 1.0, 12.0, 7.5, 0.5)
 
-# ✅ Consistency controls
+# Consistency controls
 st.subheader("Character Consistency Controls")
 
 main_character_name = st.text_input(
@@ -41,29 +51,15 @@ main_character_description = st.text_input(
     value="a small white fluffy dog with pointed ears, big black eyes, a red collar, cute friendly expression"
 )
 
-# Optional: additional characters you want to allow
 allowed_characters = st.text_input(
     "Other allowed characters (optional, comma-separated)",
     value="a lost child (boy, 8 years old), forest animals"
 )
 
-# If you want repeatable output: same seed = same image (for the same prompt)
-seed = st.number_input(
-    "Seed (same seed = more consistent results)",
-    min_value=0,
-    max_value=2_147_483_647,
-    value=42,
-    step=1
-)
-
-# If you only want the main character unless the scene clearly requires others
 strict_mode = st.checkbox(
     "Strict character mode (reduce random extra people)",
     value=True
 )
-
-HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL_ID = os.getenv("HF_MODEL_ID", "stabilityai/stable-diffusion-xl-base-1.0")
 
 # ----------------------------
 # Helpers
@@ -72,61 +68,47 @@ def split_scenes(text: str):
     scenes = [s.strip() for s in text.split("\n\n") if s.strip()]
     return scenes[:max_scenes]
 
+
 def build_prompt(scene: str) -> str:
-    """
-    Prompt template designed to keep the SAME character across scenes.
-    """
-    # Make the model "anchor" the character identity
     character_anchor = (
         f"Main character: {main_character_name} — {main_character_description}. "
         f"{main_character_name} must look the same in every scene."
     )
 
-    # Restrict characters
     if strict_mode:
         cast_rule = (
             f"Only include these characters: {main_character_name}, {allowed_characters}. "
             f"No random adults, no extra people, no new main characters."
         )
     else:
-        cast_rule = (
-            f"Keep {main_character_name} as the same main character in every scene."
-        )
+        cast_rule = f"Keep {main_character_name} as the same main character in every scene."
 
-    # Style + quality rules
     style_rule = (
         f"Children's story illustration, {style}, soft warm lighting, "
         f"consistent character design, high quality, clean composition."
     )
 
-    return f"{character_anchor} {cast_rule} Scene: {scene} {style_rule}"
+    # creativity -> mild wording guidance (OpenAI uses prompt strength internally)
+    creativity_rule = f"Creativity level: {creativity}/12 (keep character consistent)."
 
-def negative_prompt() -> str:
-    """
-    Negative prompt helps reduce unwanted artifacts and random characters.
-    """
-    if strict_mode:
-        return (
-            "extra people, adult man, adult woman, crowd, multiple humans, "
-            "new character, text, watermark, logo, low quality, blurry, deformed, bad anatomy"
-        )
-    return "text, watermark, logo, low quality, blurry, deformed"
+    return f"{character_anchor} {cast_rule} Scene: {scene} {style_rule} {creativity_rule}"
+
 
 def generate_image(prompt: str) -> Image.Image:
-    if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN missing in .env file.")
+    if not client:
+        raise RuntimeError("OPENAI_API_KEY missing. Add it to your .env file.")
 
-    client = InferenceClient(model=MODEL_ID, token=HF_TOKEN)
-
-    # NOTE: Some providers/models support negative_prompt and seed; if one fails,
-    # Streamlit will show the error and we can adjust.
-    img = client.text_to_image(
-        prompt,
-        guidance_scale=float(creativity),
-        seed=int(seed),
-        negative_prompt=negative_prompt()
+    # Generate image via OpenAI
+    resp = client.images.generate(
+        model=OPENAI_IMAGE_MODEL,     # default: gpt-image-1
+        prompt=prompt,
+        size="1024x1024",
     )
-    return img.convert("RGB")
+
+    b64 = resp.data[0].b64_json
+    img_bytes = base64.b64decode(b64)
+    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
 
 # ----------------------------
 # Run generation
@@ -139,6 +121,10 @@ if st.button("✨ Generate Illustrations", type="primary"):
     scenes = split_scenes(story)
     if not scenes:
         st.error("No scenes detected. Add blank lines between paragraphs.")
+        st.stop()
+
+    if not OPENAI_API_KEY:
+        st.error("OPENAI_API_KEY is missing. Put it in .env like: OPENAI_API_KEY=sk-xxxx")
         st.stop()
 
     st.info(
