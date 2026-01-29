@@ -10,7 +10,7 @@ Bhupendra Thapa
 AI Storybook Illustrator – AI-Powered Story Illustration Generator
 
 ## Link to project video recording:
-[ADD VIDEO LINK HERE]
+https://drive.google.com/file/d/1v4vsb6bVZGVHSqWRdKyn7KRiiY6WVYKL/view?usp=drive_link  
 
 ---
 
